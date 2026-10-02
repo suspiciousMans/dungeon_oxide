@@ -22,7 +22,7 @@ mod rng;
 // Generated from scripts/*.ox by build.rs. Each .ox file becomes a module.
 include!(concat!(env!("OUT_DIR"), "/ox_generated.rs"));
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use engine::app::{App, Context, Game};
@@ -835,6 +835,30 @@ impl DungeonGame {
     }
 }
 
+/// Where `assets/` and `profiles/` live: next to the executable if present,
+/// else the crate root in debug builds, else the exe's directory. Never the
+/// current working directory — running the game from anywhere but the repo
+/// root used to fail with a GLSL "version directive must be first statement"
+/// error, because the bare relative paths silently missed and a fallback
+/// shader carrying its own `#version` line got the cache's prefix prepended.
+fn resolve_asset_root() -> PathBuf {
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(Path::to_path_buf))
+        .unwrap_or_else(|| PathBuf::from("."));
+
+    if exe_dir.join("assets").is_dir() {
+        return exe_dir;
+    }
+    if cfg!(debug_assertions) {
+        let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        if manifest.join("assets").is_dir() {
+            return manifest;
+        }
+    }
+    exe_dir
+}
+
 /// A centered egui window — used for the floor banner and the end-of-run
 /// panel. Named so repeated frames reuse one window rather than stacking.
 fn center_window(c: &egui::Context, id: &str, text: &str) {
@@ -865,7 +889,12 @@ impl Game for DungeonGame {
         let white = GpuTexture::from_rgba8(&gl, &[255, 255, 255, 255], 1, 1, TextureFilter::Nearest)?;
         self.white = Some(Arc::new(white));
 
-        let profiles_dir = PathBuf::from("profiles");
+        // Assets are resolved relative to the executable (or, in debug,
+        // the crate root) — NOT the current working directory. Bare
+        // "assets/..." paths silently worked from the repo root and crashed
+        // everywhere else.
+        let asset_root = resolve_asset_root();
+        let profiles_dir = asset_root.join("profiles");
         let _ = std::fs::create_dir_all(&profiles_dir);
         self.params = match engine::profile::load_dir(&profiles_dir) {
             Ok(list) if !list.is_empty() => {
@@ -880,7 +909,8 @@ impl Game for DungeonGame {
             }
         };
 
-        let post_src = std::fs::read_to_string("assets/shaders/post_composite.frag")
+        let post_src =
+            std::fs::read_to_string(asset_root.join("assets/shaders/post_composite.frag"))
             .unwrap_or_else(|_| engine::renderer::DEFAULT_FRAGMENT_SRC.to_string());
         self.renderer = Some(Renderer::new(
             &gl,
@@ -890,9 +920,9 @@ impl Game for DungeonGame {
         )?);
 
         // ShaderVariantCache needs its sources up front, not lazily.
-        let vert = std::fs::read_to_string("assets/shaders/mesh.vert")
+        let vert = std::fs::read_to_string(asset_root.join("assets/shaders/mesh.vert"))
             .unwrap_or_else(|_| FALLBACK_VERT.to_string());
-        let frag = std::fs::read_to_string("assets/shaders/mesh.frag")
+        let frag = std::fs::read_to_string(asset_root.join("assets/shaders/mesh.frag"))
             .unwrap_or_else(|_| FALLBACK_FRAG.to_string());
         self.shader_cache = Some(ShaderVariantCache::new(vert, frag));
 
