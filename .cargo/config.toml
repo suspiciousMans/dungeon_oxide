@@ -1,0 +1,8 @@
+[env]
+# Needed to build vendored SDL2 (sdl2-sys "bundled" feature) with this
+# machine's toolchain: recent CMake (4.x) refuses SDL2's old
+# cmake_minimum_required, and this GCC defaults to a C standard where SDL2's
+# old bool-as-enum shim collides with the reserved bool/true/false keywords.
+# Copied verbatim from the jame-engine workspace, which builds fine with it.
+CMAKE_POLICY_VERSION_MINIMUM = "3.5"
+CFLAGS = "-std=gnu11"
