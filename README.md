@@ -61,7 +61,6 @@ cargo build
 |---|---|
 | Mouse | Look |
 | `W` `A` `S` `D` | Move |
-| `Shift` | Sprint |
 | `Esc` | Quit |
 
 Walk onto the stairs to descend. Collect loot for gold, health, and armor.
@@ -94,7 +93,9 @@ src/main.rs           engine: loop, rendering, input, the world
 src/natives.rs        the engine half of the FFI (implements `fn native`)
 src/dungeon.rs        procedural floor generation (pure data, unit-tested)
 src/rng.rs            one seeded stream for the whole run
-src/texture.rs        seamless procedural wall texture (pure data, unit-tested)
+src/texture.rs        seamless stone + flagstone (pure data, unit-tested)
+src/mesh.rs           custom low-poly meshes: box, pillar, monster, gem
+src/hud.rs            HUD layout as pure, unit-tested functions
 tools/                autopilot_check.sh — the winnability gate
 ```
 
