@@ -311,7 +311,7 @@ impl DungeonGame {
         // oxidized, not here.
         // Every .ox call goes through an installed bridge, even the pure
         // ones — a native must never be reachable without one.
-        let monster_count = self.ask(|b| ox_modules::dungeon::monster_count_for_depth(depth as i64))
+        let monster_count = self.ask(|_| ox_modules::dungeon::monster_count_for_depth(depth as i64))
             .max(1) as usize;
         let kind_pool = self
             .ask(|_| ox_modules::dungeon::kind_pool_for_depth(depth as i64))
@@ -369,7 +369,7 @@ impl DungeonGame {
             ox_modules::dungeon::health_on_descend(current_health as f64, depth as i64) as f32
         });
 
-        let epigraph = self.ask(|b| ox_modules::dungeon::floor_epigraph(depth as i64));
+        let epigraph = self.ask(|_| ox_modules::dungeon::floor_epigraph(depth as i64));
         self.sfx(440.0, 0.3);
         self.banner = Some((epigraph, 4.0));
         log::info!(
