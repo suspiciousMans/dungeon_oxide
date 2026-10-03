@@ -140,7 +140,7 @@ fn roll_loot(depth: Int, monster_kind: Int) -> Int {
 
     # Upgrades (armor) are the player's only real defense, so they need to
     # turn up often enough to matter — at 5% a whole run might yield one.
-    let upgrade_chance = 0.12 + depth as Float * 0.02
+    let upgrade_chance = 0.18 + depth as Float * 0.02
     if r < health_chance + 0.45 + upgrade_chance {
         return 3
     }
@@ -179,9 +179,15 @@ fn clamp(v: Float, lo: Float, hi: Float) -> Float {
 fn monster_count_for_depth(depth: Int) -> Int {
     # Depth 1 has few enough monsters to learn on, then it climbs. Capped so
     # a late floor is tense rather than a wall of bodies.
+    #
+    # The FINAL floor holds one fewer: with the exit already in reach, a last
+    # room of 9 monsters decided 1 seed in 5 (it died on depth 8 with 311
+    # gold, one room short). Winning should be a matter of out-lasting the
+    # walk to the stairs, not of clearing the room first.
     let n = 2 + depth
-    if n > 9 {
-        return 9
+    let capped = 7
+    if n > capped {
+        return capped
     }
     return n
 }
@@ -201,13 +207,11 @@ fn kind_pool_for_depth(depth: Int) -> Int {
 # The player's health when descending to a new floor. Partial heal — enough
 # to keep going, not enough to make depth free.
 fn health_on_descend(current: Float, depth: Int) -> Float {
-    # A descent is the game's only breather. It has to restore enough to make
-    # the next floor a fresh start, or a deep run is just a damage race the
-    # player loses by arithmetic. Tuned against 5 autopilot seeds: with a 35%
-    # floor, four of five won and the fifth died at depth 7; the 45% floor
-    # makes a good run survive without making combat free.
-    let healed = current + 28.0 - depth as Float * 1.5
-    return clamp(healed, 45.0, 100.0)
+    # A descent is the game's only breather, and past depth 6 it is the only
+    # thing standing between a good run and a death by arithmetic. Ties the
+    # restore to how deep you are, so a late descent is a real reset.
+    let healed = current + 34.0 - depth as Float * 1.5
+    return clamp(healed, 55.0, 100.0)
 }
 
 # ============================================================================

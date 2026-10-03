@@ -37,7 +37,16 @@ fn monster_decision(kind: Int, hp_frac: Float, distance: Float) -> Int {
     if distance < 6.0 + hp_frac * 6.0 { return 2 }    // healthy monsters notice you sooner
     return 0                                        // otherwise idle
 }
+
+fn player_attack_damage(depth: Int) -> Float {
+    let base = 10.0 + depth as Float * 2.0
+    return base
+}
 ```
+
+Your damage, the monsters' damage, their aggression and cowardice, what drops and how
+often, how hard a descent is to survive — all of it is in `scripts/dungeon.ox`. Nothing in
+that file knows what a GPU is.
 
 ## Building and playing
 
@@ -85,6 +94,8 @@ src/main.rs           engine: loop, rendering, input, the world
 src/natives.rs        the engine half of the FFI (implements `fn native`)
 src/dungeon.rs        procedural floor generation (pure data, unit-tested)
 src/rng.rs            one seeded stream for the whole run
+src/texture.rs        seamless procedural wall texture (pure data, unit-tested)
+tools/                autopilot_check.sh — the winnability gate
 ```
 
 ## Notes on the two halves
