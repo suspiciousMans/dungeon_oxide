@@ -205,16 +205,19 @@ fn build_blocks(
     let mut walls = Vec::new();
     let mut floors = Vec::new();
 
-    // One big floor slab under everything — cheaper than per-cell tiles and
-    // invisible, since the player never sees the underside.
-    floors.push(Block::new(
-        world_x(width / 2) - CELL * width as f32 / 2.0,
-        -0.5,
-        world_z(height / 2) - CELL * height as f32 / 2.0,
-        CELL * width as f32,
-        1.0,
-        CELL * height as f32,
-    ));
+    // One big floor slab under everything — cheaper than per-cell tiles.
+    //
+    // It must be centred on the GRID's actual extent, not the origin. Grid
+    // cell `i` sits at world position `i * CELL`, so the grid spans
+    // `0 .. width*CELL`. Centring on the origin made the slab cover
+    // `-15..15` while the cells ran `0..27`, so the floor's edge jutted into
+    // view as a grey slab and half the dungeon had no floor under it at all.
+    // Cells are centred on `i * CELL`, so the grid's full extent runs from
+    // `-CELL/2` to `(width - 1) * CELL + CELL/2` — a half-cell margin on each
+    // side. Without it the outermost cells hang over the slab's edge.
+    let span_x = CELL * (width as f32 + 1.0);
+    let span_z = CELL * (height as f32 + 1.0);
+    floors.push(Block::new(span_x / 2.0 - CELL / 2.0, -0.5, span_z / 2.0 - CELL / 2.0, span_x, 1.0, span_z));
 
     for gy in 0..height {
         for gx in 0..width {
@@ -331,6 +334,42 @@ mod tests {
                     "right border open at {gy}"
                 );
             }
+        }
+    }
+
+    /// The floor slab must cover the whole grid. It used to be centred on the
+    /// world origin while the grid runs from `0..width*CELL`, so its edge
+    /// jutted into view and half the dungeon had no floor.
+    #[test]
+    fn floor_slab_covers_every_cell() {
+        for depth in 1..=10 {
+            rng::seed(6000 + depth as u64);
+            let floor = generate(depth);
+            let slab = floor.floor_blocks[0];
+            let min_x = world_x(0) - CELL / 2.0;
+            let max_x = world_x(floor.width - 1) + CELL / 2.0;
+            let min_z = world_z(0) - CELL / 2.0;
+            let max_z = world_z(floor.height - 1) + CELL / 2.0;
+            assert!(
+                slab.x - slab.sx / 2.0 <= min_x + 1e-3,
+                "depth {depth}: floor starts at {} but the grid starts at {min_x}",
+                slab.x - slab.sx / 2.0
+            );
+            assert!(
+                slab.x + slab.sx / 2.0 >= max_x - 1e-3,
+                "depth {depth}: floor ends at {} but the grid ends at {max_x}",
+                slab.x + slab.sx / 2.0
+            );
+            assert!(
+                slab.z - slab.sz / 2.0 <= min_z + 1e-3,
+                "depth {depth}: floor starts at {} but the grid starts at {min_z}",
+                slab.z - slab.sz / 2.0
+            );
+            assert!(
+                slab.z + slab.sz / 2.0 >= max_z - 1e-3,
+                "depth {depth}: floor ends at {} but the grid ends at {max_z}",
+                slab.z + slab.sz / 2.0
+            );
         }
     }
 

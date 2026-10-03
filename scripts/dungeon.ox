@@ -203,9 +203,11 @@ fn kind_pool_for_depth(depth: Int) -> Int {
 fn health_on_descend(current: Float, depth: Int) -> Float {
     # A descent is the game's only breather. It has to restore enough to make
     # the next floor a fresh start, or a deep run is just a damage race the
-    # player loses by arithmetic.
+    # player loses by arithmetic. Tuned against 5 autopilot seeds: with a 35%
+    # floor, four of five won and the fifth died at depth 7; the 45% floor
+    # makes a good run survive without making combat free.
     let healed = current + 28.0 - depth as Float * 1.5
-    return clamp(healed, 35.0, 100.0)
+    return clamp(healed, 45.0, 100.0)
 }
 
 # ============================================================================

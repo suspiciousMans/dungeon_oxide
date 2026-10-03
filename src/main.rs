@@ -18,6 +18,7 @@ mod natives;
 // crate-root path `crate::__oxidized_natives`, so re-export it there.
 pub use natives::__oxidized_natives;
 mod rng;
+mod texture;
 
 // Generated from scripts/*.ox by build.rs. Each .ox file becomes a module.
 include!(concat!(env!("OUT_DIR"), "/ox_generated.rs"));
@@ -26,6 +27,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use engine::app::{App, Context, Game};
+use engine::audio::AudioContext;
 use engine::camera::FirstPersonCamera;
 use engine::ecs::{Entity, MeshRenderer, Transform, World};
 use engine::mesh::{primitives, GpuMesh};
@@ -45,6 +47,7 @@ use sdl2::mouse::MouseButton;
 use engine::ui::{draw_hud, egui, EguiState};
 
 use natives::Bridge;
+use texture::stone_texture;
 
 /// Eye offset above the player's feet.
 const EYE_HEIGHT: f32 = 1.5;
@@ -169,6 +172,8 @@ struct DungeonGame {
     last_bite_toast: f32,
     attack_cooldown: f32,
     attack_cd_cache: f32,
+    audio: Option<AudioContext>,
+    stone: Option<Arc<GpuTexture>>,
 }
 
 impl DungeonGame {
@@ -217,6 +222,8 @@ impl DungeonGame {
             last_bite_toast: -10.0,
             attack_cooldown: 0.0,
             attack_cd_cache: 0.6,
+            audio: None,
+            stone: None,
         }
     }
 
@@ -260,7 +267,9 @@ impl DungeonGame {
             ));
         }
 
-        // Walls.
+        // Walls. Textured, so they read distinctly from the floor slab —
+        // the white fallback is what made the whole dungeon one flat grey.
+        let stone = Arc::clone(self.stone.as_ref().expect("texture set up in init"));
         for block in &floor.walls {
             self.world.spawn((
                 Transform {
@@ -270,7 +279,7 @@ impl DungeonGame {
                 },
                 MeshRenderer {
                     mesh: Arc::clone(&cube),
-                    texture: Some(Arc::clone(&white)),
+                    texture: Some(Arc::clone(&stone)),
                 },
             ));
         }
@@ -282,8 +291,16 @@ impl DungeonGame {
         );
         self.player_position = spawn;
         self.player_velocity = Vec3::ZERO;
+        // The player entity exists so `render` has a Transform to follow, but
+        // it must NOT be visible: a full-size cube at the camera's own position
+        // fills the screen with a grey slab. Zero scale makes it inert while
+        // keeping the entity (and its position) available.
         self.player_entity = self.world.spawn((
-            Transform::from_position(spawn),
+            Transform {
+                position: spawn,
+                rotation: glam::Quat::IDENTITY,
+                scale: Vec3::ZERO,
+            },
             MeshRenderer {
                 mesh: Arc::clone(&cube),
                 texture: Some(Arc::clone(&white)),
@@ -306,7 +323,14 @@ impl DungeonGame {
             let pos = Vec3::new(dungeon::world_x(cell.0), 0.9, dungeon::world_z(cell.1));
             let health = 30.0 + kind as f32 * 15.0 + depth as f32 * 5.0;
             let entity = self.world.spawn((
-                Transform::from_position(pos),
+                // Scale is the world size: the cube primitive spans -0.5..0.5,
+                // so Vec3::ONE would render a 2x2x2 block — bigger than the
+                // player and, next to the camera, a grey slab across the view.
+                Transform {
+                    position: pos,
+                    rotation: glam::Quat::IDENTITY,
+                    scale: Vec3::splat(MONSTER_SIZE),
+                },
                 MeshRenderer {
                     mesh: Arc::clone(&cube),
                     texture: Some(Arc::clone(&white)),
@@ -346,6 +370,7 @@ impl DungeonGame {
         });
 
         let epigraph = self.ask(|b| ox_modules::dungeon::floor_epigraph(depth as i64));
+        self.sfx(440.0, 0.3);
         self.banner = Some((epigraph, 4.0));
         log::info!(
             "descended to depth {depth}: {} rooms, {} monsters, spawn {:?} stairs {:?}",
@@ -616,9 +641,11 @@ impl DungeonGame {
         }
         self.player_position = next;
 
-        // Keep the ECS transform in sync — that's what render reads.
+        // Keep the ECS transform in sync — that's what render reads. Scale
+        // stays ZERO so the player is never drawn (see `descend`).
         if let Ok(mut t) = self.world.get::<&mut Transform>(self.player_entity) {
             t.position = self.player_position;
+            t.scale = Vec3::ZERO;
         }
     }
 
@@ -684,7 +711,15 @@ impl DungeonGame {
         bridge.actions.clear();;
     }
 
-/// True when the player asked to swing this frame. Left mouse button, or
+    /// A short procedural sound effect. `play_tone` needs no asset files,
+    /// which matters because this repo ships none.
+    fn sfx(&self, freq: f32, secs: f32) {
+        if let Some(audio) = &self.audio {
+            audio.play_tone(freq, secs);
+        }
+    }
+
+    /// True when the player asked to swing this frame. Left mouse button, or
     /// the autopilot, which fights on its own.
     fn wants_attack(&self, ctx: &Context) -> bool {
         self.autopilot || ctx.input.is_button_down(MouseButton::Left)
@@ -727,6 +762,7 @@ impl DungeonGame {
             let reward =
                 self.ask(|_| ox_modules::dungeon::kill_reward(depth as i64, kind as i64));
             self.gold += reward as i32;
+            self.sfx(90.0, 0.25);
             self.toast(format!("Slain. +{reward} gold."));
             self.drop_loot(index);
             if let Ok(mut t) = self.world.get::<&mut Transform>(self.monsters[index].entity) {
@@ -734,6 +770,7 @@ impl DungeonGame {
             }
         } else {
             let remaining = self.monsters[index].health;
+            self.sfx(150.0, 0.08);
             self.toast(format!("Hit for {damage:.0} ({remaining:.0} left)."));
         }
     }
@@ -815,6 +852,7 @@ impl DungeonGame {
                 // toasts on one frame and paper the screen.
                 if self.time - self.last_bite_toast > 1.5 {
                     self.last_bite_toast = self.time;
+                    self.sfx(70.0, 0.15);
                     let noun = ["thing", "shade", "husk"][(self.monsters[i].kind as usize).min(2)];
                     self.toast(format!("A {noun} bites for {dealt:.0}."));
                 }
@@ -842,7 +880,11 @@ impl DungeonGame {
         let cube = Arc::clone(self.cube.as_ref().expect("mesh set up in init"));
         let white = Arc::clone(self.white.as_ref().expect("texture set up in init"));
         let entity = self.world.spawn((
-            Transform::from_position(pos),
+            Transform {
+                position: pos,
+                rotation: glam::Quat::IDENTITY,
+                scale: Vec3::splat(LOOT_SIZE),
+            },
             MeshRenderer {
                 mesh: cube,
                 texture: Some(white),
@@ -943,14 +985,17 @@ impl DungeonGame {
                 // A red edge vignette when hurt, drawn as four border
                 // bands rather than a rounded shape.
                 let rect = c.screen_rect();
+                // Alpha premultiplied in GAMMA space: egui's
+                // from_rgba_unmultiplied converts in linear space, which
+                // turns a subtle 28% wash into a near-opaque red slab.
                 let band = egui::Rect::from_min_size(
                     rect.min,
-                    egui::vec2(rect.width(), 90.0),
+                    egui::vec2(rect.width(), 70.0),
                 );
                 c.layer_painter(egui::LayerId::background()).rect_filled(
                     band,
                     0.0,
-                    egui::Color32::from_rgba_unmultiplied(140, 0, 0, 70),
+                    egui::Color32::from_rgba_premultiplied(48, 6, 6, 40),
                 );
             }
             if dead {
@@ -1031,6 +1076,11 @@ fn center_window(c: &egui::Context, id: &str, text: &str) {
 }
 
 const MAX_DEPTH: i32 = 8;
+/// World size of a monster, in units. The cube primitive spans -0.5..0.5, so
+/// this is literally the edge length.
+const MONSTER_SIZE: f32 = 0.9;
+/// Loot cubes are small on purpose — they're meant to be spotted, not blocking.
+const LOOT_SIZE: f32 = 0.45;
 
 impl Game for DungeonGame {
     fn init(&mut self, ctx: &mut Context) -> anyhow::Result<()> {
@@ -1085,6 +1135,26 @@ impl Game for DungeonGame {
         let frag = std::fs::read_to_string(asset_root.join("assets/shaders/mesh.frag"))
             .unwrap_or_else(|_| FALLBACK_FRAG.to_string());
         self.shader_cache = Some(ShaderVariantCache::new(vert, frag));
+
+        // A seamless stone texture for the walls. Bilinear, not Nearest: a
+        // 64px pattern nearest-filtered shimmers into static at range.
+        let stone = GpuTexture::from_rgba8(
+            &gl,
+            &stone_texture(64, 64),
+            64,
+            64,
+            TextureFilter::Bilinear,
+        )?;
+        self.stone = Some(Arc::new(stone));
+
+        // Audio is optional: a machine with no output device must still play.
+        self.audio = match AudioContext::new() {
+            Ok(audio) => Some(audio),
+            Err(err) => {
+                log::warn!("no audio output available, sounds will be silent: {err}");
+                None
+            }
+        };
 
         // egui backs the HUD. Its painter leaves DEPTH_TEST off and
         // BLEND/SCISSOR on, which is why render() re-enables depth right

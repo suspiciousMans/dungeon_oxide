@@ -430,6 +430,7 @@ dependencies = [
  "glow",
  "log",
  "rand",
+ "rodio",
  "sdl2",
  "winres",
 ]

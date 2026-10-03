@@ -12,6 +12,10 @@ anyhow = "1.0"
 log = "0.4"
 env_logger = "0.11"
 rand = "0.8"
+# Audio. The engine re-exports its own AudioContext, but a game needs rodio
+# with the same feature set to satisfy it — matching the engine's workspace
+# pin avoids two incompatible copies of the crate in the graph.
+rodio = { version = "0.19", default-features = false, features = ["symphonia-all"] }
 
 [build-dependencies]
 winres = "0.1"
