@@ -859,6 +859,31 @@ fn resolve_asset_root() -> PathBuf {
     exe_dir
 }
 
+/// Index of the nearest living monster within `range` of `origin`, or `None`.
+/// Pure, so it's unit-testable without a window or an ECS world. Dead
+/// monsters (health <= 0) are skipped — a corpse must never eat a swing.
+fn nearest_monster_in_range(
+    origin: Vec3,
+    monsters: &[(Vec3, f32)],
+    range: f32,
+) -> Option<usize> {
+    let mut best: Option<(usize, f32)> = None;
+    for (i, (pos, health)) in monsters.iter().enumerate() {
+        if *health <= 0.0 {
+            continue;
+        }
+        let d = origin.distance(*pos);
+        if d > range {
+            continue;
+        }
+        match best {
+            Some((_, bd)) if bd <= d => {}
+            _ => best = Some((i, d)),
+        }
+    }
+    best.map(|(i, _)| i)
+}
+
 /// A centered egui window — used for the floor banner and the end-of-run
 /// panel. Named so repeated frames reuse one window rather than stacking.
 fn center_window(c: &egui::Context, id: &str, text: &str) {
@@ -1157,4 +1182,95 @@ fn main() -> anyhow::Result<()> {
         720,
         DungeonGame::new(seed, autopilot),
     )
+}
+
+#[cfg(test)]
+mod ox_rules_tests {
+    use super::ox_modules::dungeon as ox;
+    use super::*;
+
+    // --- Task 1.1: the attack rules, which don't exist yet ---
+
+    #[test]
+    fn attack_damage_scales_with_depth() {
+        let shallow = ox::player_attack_damage(1);
+        let deep = ox::player_attack_damage(8);
+        assert!(
+            deep > shallow,
+            "deeper floors must hit harder: {deep} !> {shallow}"
+        );
+    }
+
+    #[test]
+    fn attack_damage_is_never_zero() {
+        for depth in 1..=MAX_DEPTH {
+            assert!(
+                ox::player_attack_damage(depth as i64) > 0.0,
+                "depth {depth} dealt zero damage"
+            );
+        }
+    }
+
+    #[test]
+    fn attack_cooldown_never_reaches_zero() {
+        // A zero cooldown would be a fire rate of infinity.
+        for depth in 1..=MAX_DEPTH {
+            assert!(
+                ox::attack_cooldown(depth as i64) > 0.0,
+                "depth {depth} cooldown was 0"
+            );
+        }
+    }
+
+    #[test]
+    fn attack_cooldown_shrinks_with_depth() {
+        assert!(ox::attack_cooldown(8) < ox::attack_cooldown(1));
+    }
+
+    #[test]
+    fn attack_range_is_reachable_and_not_pointless() {
+        let r = ox::attack_range();
+        assert!(r >= 1.5, "melee range {r} is too short to be usable");
+        assert!(r <= 4.0, "attack range {r} is longer than a dungeon corridor");
+    }
+
+    #[test]
+    fn kill_reward_grows_with_depth() {
+        assert!(ox::kill_reward(8, 0) > ox::kill_reward(1, 0));
+    }
+
+    // --- Task 1.5: melee targeting, which doesn't exist yet either ---
+
+    #[test]
+    fn nearest_monster_in_range_is_found() {
+        let monsters = [
+            (Vec3::new(0.5, 0.0, 0.0), 0.0f32),  // dead, and closest of all
+            (Vec3::new(1.0, 0.0, 0.0), 50.0f32), // alive, nearest living
+            (Vec3::new(2.0, 0.0, 0.0), 50.0f32), // alive, farther
+        ];
+        let hit = nearest_monster_in_range(Vec3::ZERO, &monsters, 2.5);
+        assert_eq!(hit, Some(1), "should hit the nearest ALIVE monster");
+    }
+
+    #[test]
+    fn no_monster_in_range_returns_none() {
+        let monsters = [(Vec3::new(10.0, 0.0, 0.0), 50.0f32)];
+        assert_eq!(nearest_monster_in_range(Vec3::ZERO, &monsters, 2.5), None);
+    }
+
+    #[test]
+    fn dead_monsters_are_never_targeted() {
+        let monsters = [(Vec3::new(1.0, 0.0, 0.0), 0.0f32)];
+        assert_eq!(nearest_monster_in_range(Vec3::ZERO, &monsters, 5.0), None);
+    }
+
+    #[test]
+    fn nearer_monster_wins_regardless_of_order() {
+        let monsters = [
+            (Vec3::new(4.0, 0.0, 0.0), 50.0f32),
+            (Vec3::new(1.0, 0.0, 0.0), 50.0f32),
+            (Vec3::new(2.0, 0.0, 0.0), 50.0f32),
+        ];
+        assert_eq!(nearest_monster_in_range(Vec3::ZERO, &monsters, 5.0), Some(1));
+    }
 }

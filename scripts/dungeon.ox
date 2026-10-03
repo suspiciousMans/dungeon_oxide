@@ -276,3 +276,38 @@ fn clamp_i(v: Int, lo: Int, hi: Int) -> Int {
     }
     return v
 }
+# ============================================================================
+# PLAYER COMBAT
+#
+# The host asks for these numbers each time the player swings; all the
+# balance lives here, not in Rust.
+# ============================================================================
+
+# How hard a swing hits. Grows with depth so a deep-floor monster still takes
+# a few hits rather than dying to one — otherwise the late floors are a wall.
+fn player_attack_damage(depth: Int) -> Float {
+    let base = 10.0 + depth as Float * 2.0
+    return base
+}
+
+# Seconds between swings. Tightens slightly with depth so it reads as
+# escalation, but never reaches zero (that would be infinite fire rate).
+fn attack_cooldown(depth: Int) -> Float {
+    let t = 0.55 - depth as Float * 0.03
+    if t < 0.25 {
+        return 0.25
+    }
+    return t
+}
+
+# How far a swing reaches, in world units.
+fn attack_range() -> Float {
+    return 2.2
+}
+
+# Gold awarded for a kill. The only source of gold in the game, so it has to
+# be the thing that rewards descending.
+fn kill_reward(depth: Int, monster_kind: Int) -> Int {
+    let base = 1 + depth + monster_kind
+    return base
+}
