@@ -97,7 +97,7 @@ fn strike_damage(kind: Int, depth: Int) -> Float {
     # Deliberately gentle: there is no player attack yet, so a monster that
     # lands 12 damage every 1.2s kills you in ~10s no matter how well you
     # play. Damage has to ramp instead of starting brutal.
-    let base = 3.0 + kind as Float * 2.0 + depth as Float * 1.2
+    let base = 3.0 + kind as Float * 1.5 + depth as Float * 0.9
     return base
 }
 
@@ -138,8 +138,9 @@ fn roll_loot(depth: Int, monster_kind: Int) -> Int {
         return 1
     }
 
-    # Upgrades are the reward for going deep.
-    let upgrade_chance = 0.05 + depth as Float * 0.02
+    # Upgrades (armor) are the player's only real defense, so they need to
+    # turn up often enough to matter — at 5% a whole run might yield one.
+    let upgrade_chance = 0.12 + depth as Float * 0.02
     if r < health_chance + 0.45 + upgrade_chance {
         return 3
     }
@@ -200,8 +201,11 @@ fn kind_pool_for_depth(depth: Int) -> Int {
 # The player's health when descending to a new floor. Partial heal — enough
 # to keep going, not enough to make depth free.
 fn health_on_descend(current: Float, depth: Int) -> Float {
-    let healed = current + 15.0 - depth as Float * 2.0
-    return clamp(healed, 1.0, 100.0)
+    # A descent is the game's only breather. It has to restore enough to make
+    # the next floor a fresh start, or a deep run is just a damage race the
+    # player loses by arithmetic.
+    let healed = current + 28.0 - depth as Float * 1.5
+    return clamp(healed, 35.0, 100.0)
 }
 
 # ============================================================================

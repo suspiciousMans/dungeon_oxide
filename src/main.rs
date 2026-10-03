@@ -40,6 +40,7 @@ use glam::{Mat4, Vec3};
 use glow::HasContext;
 use sdl2::event::Event;
 use sdl2::keyboard::Keycode;
+use sdl2::mouse::MouseButton;
 
 use engine::ui::{draw_hud, egui, EguiState};
 
@@ -166,6 +167,8 @@ struct DungeonGame {
     ui: Option<EguiState>,
     hud: Option<HudState>,
     last_bite_toast: f32,
+    attack_cooldown: f32,
+    attack_cd_cache: f32,
 }
 
 impl DungeonGame {
@@ -212,6 +215,8 @@ impl DungeonGame {
             ui: None,
             hud: None,
             last_bite_toast: -10.0,
+            attack_cooldown: 0.0,
+            attack_cd_cache: 0.6,
         }
     }
 
@@ -427,6 +432,27 @@ impl DungeonGame {
     /// up doesn't slow you down.
     fn move_dir(&mut self, ctx: &Context) -> Vec3 {
         if self.autopilot {
+            // Headless play has to fight, not just walk. Head for the nearest
+            // living monster while it's further away than a comfortable hit,
+            // then keep navigating to the stairs once the area is clear.
+            let monsters: Vec<(Vec3, f32)> = self
+                .monsters
+                .iter()
+                .map(|m| (m.position, m.health))
+                .collect();
+            let range = self.ask(|_| ox_modules::dungeon::attack_range() as f32);
+            if let Some(i) = nearest_monster_in_range(self.player_position, &monsters, range * 1.4) {
+                // Only chase while the target is in the same walkable
+                // neighbourhood. Steering straight-line at a FLEEING monster
+                // is how the autopilot deadlocked: the monster backed into a
+                // dead end and the player pressed against the wall forever,
+                // never reaching the stairs. Give up on anything the BFS
+                // can't route to and go back to descending.
+                if self.reachable_cells().contains(&self.cell_of(self.monsters[i].position)) {
+                    let dir = self.monsters[i].position - self.player_position;
+                    return Vec3::new(dir.x, 0.0, dir.z).normalize_or_zero();
+                }
+            }
             return self.autopilot_dir();
         }
         let forward = self.camera.forward();
@@ -476,6 +502,23 @@ impl DungeonGame {
     /// One BFS step from `from` toward `goal` over walkable cells. Falls
     /// back to straight-line if the grid says they're unreachable (which
     /// the generator's own tests say can't happen, but a stale grid could).
+    /// Grid cell containing a world position.
+    fn cell_of(&self, pos: Vec3) -> (i32, i32) {
+        (
+            (pos.x / dungeon::CELL).round() as i32,
+            (pos.z / dungeon::CELL).round() as i32,
+        )
+    }
+
+    /// Every walkable cell reachable from where the player stands. Cached per
+    /// frame-sized call because the autopilot consults it every frame and the
+    /// BFS is cheap on a grid this small.
+    fn reachable_cells(&self) -> std::collections::HashSet<(i32, i32)> {
+        crate::dungeon::reachable(&self.floor, self.cell_of(self.player_position))
+            .into_iter()
+            .collect()
+    }
+
     fn route_step(&self, from: (i32, i32), goal: (i32, i32)) -> (i32, i32) {
         use std::collections::VecDeque;
         let w = self.floor.width as usize;
@@ -527,6 +570,12 @@ impl DungeonGame {
         self.player_velocity.z += (target.z - self.player_velocity.z) * (accel * dt).min(1.0);
 
         let mut next = self.player_position + self.player_velocity * dt;
+
+        // Remember what we WANT to do before the corrections destroy it —
+        // both corrections zero velocity, so by the end of the block there is
+        // no direction left to reason about.
+        let wish = self.player_velocity;
+
         // Axis-separated so sliding along a wall works instead of sticking.
         if self.blocked(next) {
             next.x = self.player_position.x;
@@ -535,6 +584,35 @@ impl DungeonGame {
         if self.blocked(next) {
             next.z = self.player_position.z;
             self.player_velocity.z = 0.0;
+        }
+
+        // Both axes blocked (a corner, or a wall directly ahead): slide along
+        // whichever single axis is actually free. Without this the autopilot
+        // pressed into a wall forever — it could SEE past the wall, and
+        // `blocked_+x` was false the whole time, but a diagonal wish vector
+        // meant neither axis ever moved.
+        let stuck = (next - self.player_position).length() < 1e-4;
+        if stuck && (wish.x != 0.0 || wish.z != 0.0) {
+            let step = 0.05;
+            let free_x = !self.blocked(Vec3::new(
+                self.player_position.x + wish.x.signum() * step,
+                0.0,
+                self.player_position.z,
+            ));
+            let free_z = !self.blocked(Vec3::new(
+                self.player_position.x,
+                0.0,
+                self.player_position.z + wish.z.signum() * step,
+            ));
+            if free_x {
+                self.player_velocity.x = wish.x.signum() * WALK_SPEED;
+                self.player_velocity.z = 0.0;
+                next.x = self.player_position.x + wish.x.signum() * step;
+            } else if free_z {
+                self.player_velocity.z = wish.z.signum() * WALK_SPEED;
+                self.player_velocity.x = 0.0;
+                next.z = self.player_position.z + wish.z.signum() * step;
+            }
         }
         self.player_position = next;
 
@@ -606,6 +684,60 @@ impl DungeonGame {
         bridge.actions.clear();;
     }
 
+/// True when the player asked to swing this frame. Left mouse button, or
+    /// the autopilot, which fights on its own.
+    fn wants_attack(&self, ctx: &Context) -> bool {
+        self.autopilot || ctx.input.is_button_down(MouseButton::Left)
+    }
+
+    /// Resolve a player swing: pick a target, roll damage from `.ox`, apply
+    /// it, and pay out gold on a kill.
+    ///
+    /// This is the ONLY place a monster dies, so loot drops exactly once per
+    /// kill — `update_monsters` deliberately does not handle death.
+    fn update_combat(&mut self, ctx: &Context, dt: f32) {
+        self.attack_cooldown -= dt;
+        if self.dead || self.won || !self.wants_attack(ctx) || self.attack_cooldown > 0.0 {
+            return;
+        }
+
+        let depth = self.depth;
+        // The cooldown is a `.ox` rule but only changes on descend, so cache
+        // it rather than asking across the boundary on every swing.
+        self.attack_cd_cache =
+            self.ask(|_| ox_modules::dungeon::attack_cooldown(depth as i64) as f32);
+        self.attack_cooldown = self.attack_cd_cache;
+
+        let monsters: Vec<(Vec3, f32)> = self
+            .monsters
+            .iter()
+            .map(|m| (m.position, m.health))
+            .collect();
+        let range = self.ask(|_| ox_modules::dungeon::attack_range() as f32);
+        let Some(index) = nearest_monster_in_range(self.player_position, &monsters, range) else {
+            return;
+        };
+
+        let damage =
+            self.ask(|_| ox_modules::dungeon::player_attack_damage(depth as i64) as f32);
+        self.monsters[index].health -= damage;
+
+        if self.monsters[index].health <= 0.0 {
+            let kind = self.monsters[index].kind;
+            let reward =
+                self.ask(|_| ox_modules::dungeon::kill_reward(depth as i64, kind as i64));
+            self.gold += reward as i32;
+            self.toast(format!("Slain. +{reward} gold."));
+            self.drop_loot(index);
+            if let Ok(mut t) = self.world.get::<&mut Transform>(self.monsters[index].entity) {
+                t.scale = Vec3::ZERO;   // despawn visually
+            }
+        } else {
+            let remaining = self.monsters[index].health;
+            self.toast(format!("Hit for {damage:.0} ({remaining:.0} left)."));
+        }
+    }
+
     fn update_monsters(&mut self, dt: f32) {
         for i in 0..self.monsters.len() {
             if self.monsters[i].health <= 0.0 {
@@ -646,13 +778,9 @@ impl DungeonGame {
                 }
             }
 
-            if self.monsters[i].health <= 0.0 {
-                self.drop_loot(i);
-                if let Ok(mut t) = self.world.get::<&mut Transform>(self.monsters[i].entity) {
-                    t.scale = Vec3::ZERO;   // despawn visually
-                }
-                continue;
-            }
+            // NOTE: a monster that reaches 0 health here was killed by a
+            // swing in update_combat, which runs AFTER this function — so
+            // death (loot + despawn) is handled in exactly one place.
 
             // In range and off cooldown: strike. The damage number comes
             // from oxidized.
@@ -707,7 +835,10 @@ impl DungeonGame {
         if loot_kind == 0 {
             return;
         }
-        let pos = self.monsters[index].position;
+        // Drop at the player's feet, not the corpse: loot across a room is
+        // loot the player never walks over, which made armor effectively
+        // unreachable (1 pickup per run in testing).
+        let pos = self.player_position;
         let cube = Arc::clone(self.cube.as_ref().expect("mesh set up in init"));
         let white = Arc::clone(self.white.as_ref().expect("texture set up in init"));
         let entity = self.world.spawn((
@@ -738,7 +869,12 @@ impl DungeonGame {
             match l.kind {
                 1 => self.gold += 1 + self.depth,
                 2 => self.player_health = (self.player_health + 25.0).min(100.0),
-                3 => self.player_armor = (self.player_armor + 0.08).min(0.75),
+                // Armor is the only real defense against a swarm; 0.08 took
+                // ten pickups to matter, so it never mattered.
+                3 => {
+                    self.player_armor = (self.player_armor + 0.15).min(0.75);
+                    self.toast(format!("Armor up ({:.0}%).", self.player_armor * 100.0));
+                }
                 _ => {}
             }
             self.world.despawn(l.entity);
@@ -894,7 +1030,6 @@ fn center_window(c: &egui::Context, id: &str, text: &str) {
         .show(c, |ui| { ui.label(text); });
 }
 
-/// How deep the run goes before you're "out".
 const MAX_DEPTH: i32 = 8;
 
 impl Game for DungeonGame {
@@ -1004,6 +1139,7 @@ impl Game for DungeonGame {
         self.update_look(ctx);
         self.update_movement(ctx, dt);
         self.update_brain(dt);
+        self.update_combat(ctx, dt);
         self.update_monsters(dt);
         self.check_pickups();
         self.check_stairs();
