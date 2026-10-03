@@ -82,8 +82,50 @@ fn main() {
     // Only re-run this script when the .ox files change, not on every
     // unrelated source edit.
     println!("cargo:rerun-if-changed=scripts");
+    println!("cargo:rerun-if-changed=assets");
+    println!("cargo:rerun-if-changed=profiles");
 
+    stage_assets();
     embed_icon();
+}
+
+/// Copies `assets/` and `profiles/` next to the executable so a release build
+/// can find them. Without this, `cargo build --release` produces a binary that
+/// works from the project directory and dies anywhere else — `resolve_asset_root`
+/// looks next to the exe first, and there's nothing there in release.
+fn stage_assets() {
+    let out = match std::env::var("OUT_DIR") {
+        Ok(v) => PathBuf::from(v),
+        Err(_) => return,
+    };
+    // OUT_DIR is target/<profile>/build/<pkg>-<hash>/out — three levels up is
+    // target/<profile>, which is where the .exe lands.
+    let Some(profile_dir) = out.ancestors().nth(3).map(|p| p.to_path_buf()) else {
+        return;
+    };
+    for dir in ["assets", "profiles"] {
+        let from = Path::new(dir);
+        if !from.is_dir() {
+            continue;
+        }
+        let to = profile_dir.join(dir);
+        let _ = std::fs::create_dir_all(&to);
+        copy_tree(from, &to);
+    }
+}
+
+fn copy_tree(from: &Path, to: &Path) {
+    let Ok(entries) = std::fs::read_dir(from) else { return };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let target = to.join(entry.file_name());
+        if path.is_dir() {
+            let _ = std::fs::create_dir_all(&target);
+            copy_tree(&path, &target);
+        } else {
+            let _ = std::fs::copy(&path, &target);
+        }
+    }
 }
 
 fn embed_icon() {

@@ -1336,10 +1336,14 @@ impl Game for DungeonGame {
     }
 }
 
-/// Minimal shaders, used only if the files under assets/ are missing so the
+/// Minimal shaders, used only if the files under `assets/` are missing so the
 /// game still boots from a fresh clone instead of dying in `init`.
+///
+/// **No `#version` line.** `ShaderVariantCache` prepends `#version 330 core`
+/// itself; a second one makes GLSL fail with `C0204: version directive must
+/// be first statement and may not be repeated`, which reads like a missing
+/// file but is really a shader that was never going to compile.
 const FALLBACK_VERT: &str = r#"
-#version 300 es
 in vec3 aPosition;
 in vec3 aNormal;
 uniform mat4 uModel;
@@ -1353,7 +1357,6 @@ void main() {
 "#;
 
 const FALLBACK_FRAG: &str = r#"
-#version 300 es
 precision highp float;
 in vec3 vNormal;
 uniform vec3 uAmbientColor;
