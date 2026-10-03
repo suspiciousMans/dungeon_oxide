@@ -1,0 +1,44 @@
+(
+    name: "dungeon",
+    vertex_shader: "assets/shaders/mesh.vert",
+    fragment_shader: "assets/shaders/mesh.frag",
+    post_fragment_shader: "assets/shaders/post_composite.frag",
+    render: (
+        resolution_scale: 1.0,
+        fixed_resolution: None,
+        // A cold near-black. Fog is what makes a torch-lit dungeon read as
+        // deep rather than as a grey box, and it hides the grid's far edge.
+        fog_color: (0.045, 0.045, 0.065),
+        // Far enough out that nearby walls aren't fogged, close enough that
+        // the corridor ahead fades before the geometry pops.
+        fog_start: 9.0,
+        fog_end: 34.0,
+        // Full colour: the PS2 dither/posterize look fights with detailed
+        // procedural textures and reads as noise.
+        color_levels: 256,
+        dither_strength: 0.0,
+        lighting_mode: VertexLit,
+        // Lifted from the stock 0.30. At 0.30 with the darkened floor
+        // texture the whole dungeon sat at roughly 10% luma on screen and
+        // was genuinely hard to navigate.
+        ambient_color: (0.46, 0.45, 0.52),
+        light_dir: (0.35, 0.86, 0.37),
+        // Off. The pixel-snapping grid fights the 64px procedural textures
+        // and makes the walls shimmer as you walk.
+        vertex_snap_amount: 0.0,
+        affine_texture_mapping: false,
+        texture_filter: Bilinear,
+        sky_horizon_color: (0.05, 0.05, 0.075),
+        sky_zenith_color: (0.02, 0.02, 0.035),
+        // On: without it you can see the inside of a wall you are pressed
+        // against, which reads as a hole in the world.
+        backface_culling: true,
+        hud: (
+            anchor_offset: (12.0, 12.0),
+            bar_width: 160.0,
+            bar_fill_color: (0.3, 0.7, 0.3),
+            title_font_size: 20.0,
+            toast_color: (1.0, 1.0, 1.0),
+        ),
+    ),
+)

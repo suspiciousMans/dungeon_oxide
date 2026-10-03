@@ -18,6 +18,8 @@ mod natives;
 // crate-root path `crate::__oxidized_natives`, so re-export it there.
 pub use natives::__oxidized_natives;
 mod rng;
+mod hud;
+mod mesh;
 mod texture;
 
 // Generated from scripts/*.ox by build.rs. Each .ox file becomes a module.
@@ -44,10 +46,11 @@ use sdl2::event::Event;
 use sdl2::keyboard::Keycode;
 use sdl2::mouse::MouseButton;
 
-use engine::ui::{draw_hud, egui, EguiState};
+use engine::ui::{egui, EguiState};
 
+use hud::{paint, HudView};
 use natives::Bridge;
-use texture::stone_texture;
+use texture::{floor_texture, stone_texture};
 
 /// Eye offset above the player's feet.
 const EYE_HEIGHT: f32 = 1.5;
@@ -142,6 +145,11 @@ struct DungeonGame {
 
     renderer_gl: Option<Arc<glow::Context>>,
     cube: Option<Arc<GpuMesh>>,
+    wall_mesh: Option<Arc<GpuMesh>>,
+    floor_mesh: Option<Arc<GpuMesh>>,
+    pillar_mesh: Option<Arc<GpuMesh>>,
+    monster_mesh: Option<Arc<GpuMesh>>,
+    gem_mesh: Option<Arc<GpuMesh>>,
     white: Option<Arc<GpuTexture>>,
 
     floor: dungeon::Floor,
@@ -174,6 +182,7 @@ struct DungeonGame {
     attack_cd_cache: f32,
     audio: Option<AudioContext>,
     stone: Option<Arc<GpuTexture>>,
+    flagstone: Option<Arc<GpuTexture>>,
 }
 
 impl DungeonGame {
@@ -186,6 +195,11 @@ impl DungeonGame {
             camera: FirstPersonCamera::new(),
             renderer_gl: None,
             cube: None,
+            wall_mesh: None,
+            floor_mesh: None,
+            pillar_mesh: None,
+            monster_mesh: None,
+            gem_mesh: None,
             white: None,
             floor: dungeon::Floor {
                 depth: 0,
@@ -224,6 +238,7 @@ impl DungeonGame {
             attack_cd_cache: 0.6,
             audio: None,
             stone: None,
+            flagstone: None,
         }
     }
 
@@ -253,6 +268,8 @@ impl DungeonGame {
         let white = Arc::clone(self.white.as_ref().expect("texture set up in init"));
 
         // Floor slab.
+        let flagstone = Arc::clone(self.flagstone.as_ref().expect("texture set up in init"));
+        let floor_mesh = Arc::clone(self.floor_mesh.as_ref().expect("mesh set up in init"));
         for block in &floor.floor_blocks {
             self.world.spawn((
                 Transform {
@@ -261,8 +278,8 @@ impl DungeonGame {
                     scale: Vec3::new(block.sx, block.sy, block.sz),
                 },
                 MeshRenderer {
-                    mesh: Arc::clone(&cube),
-                    texture: Some(Arc::clone(&white)),
+                    mesh: Arc::clone(&floor_mesh),
+                    texture: Some(Arc::clone(&flagstone)),
                 },
             ));
         }
@@ -270,6 +287,7 @@ impl DungeonGame {
         // Walls. Textured, so they read distinctly from the floor slab —
         // the white fallback is what made the whole dungeon one flat grey.
         let stone = Arc::clone(self.stone.as_ref().expect("texture set up in init"));
+        let wall_mesh = Arc::clone(self.wall_mesh.as_ref().expect("mesh set up in init"));
         for block in &floor.walls {
             self.world.spawn((
                 Transform {
@@ -278,10 +296,49 @@ impl DungeonGame {
                     scale: Vec3::new(block.sx, block.sy, block.sz),
                 },
                 MeshRenderer {
-                    mesh: Arc::clone(&cube),
+                    mesh: Arc::clone(&wall_mesh),
                     texture: Some(Arc::clone(&stone)),
                 },
             ));
+        }
+
+        // Decorative pillars, placed in a room's INTERIOR corners.
+        //
+        // They are visual only — no collider — so the placement has to be
+        // provably out of the walking space, not assumed to be. A room's
+        // outer corner cells are walkable floor (the generator carves
+        // `x..x+w`), so a pillar there is an invisible wall the player walks
+        // into. Instead: put them at the inside corners of a 2-cell inset,
+        // and skip any that would land on a walkable cell.
+        let pillar = Arc::clone(self.pillar_mesh.as_ref().expect("mesh set up in init"));
+        for room in &floor.rooms {
+            if room.w < 4 || room.h < 4 {
+                continue; // too small to inset without eating the walkway
+            }
+            let (ix, iy) = (room.x + 1, room.y + 1);
+            let (jx, jy) = (room.x + room.w - 2, room.y + room.h - 2);
+            for (cx, cy) in [(ix, iy), (jx, iy), (ix, jy), (jx, jy)] {
+                // Never on a walkable cell — that's the whole safety rule.
+                if cx < 0
+                    || cy < 0
+                    || cx >= floor.width
+                    || cy >= floor.height
+                    || floor.walkable[cy as usize][cx as usize]
+                {
+                    continue;
+                }
+                self.world.spawn((
+                    Transform {
+                        position: Vec3::new(dungeon::world_x(cx), 1.75, dungeon::world_z(cy)),
+                        rotation: glam::Quat::IDENTITY,
+                        scale: Vec3::new(0.9, 3.5, 0.9),
+                    },
+                    MeshRenderer {
+                        mesh: Arc::clone(&pillar),
+                        texture: Some(Arc::clone(&stone)),
+                    },
+                ));
+            }
         }
 
         let spawn = Vec3::new(
@@ -322,17 +379,20 @@ impl DungeonGame {
             let kind = (i % kind_pool.max(1)) as i32;
             let pos = Vec3::new(dungeon::world_x(cell.0), 0.9, dungeon::world_z(cell.1));
             let health = 30.0 + kind as f32 * 15.0 + depth as f32 * 5.0;
+            let monster_mesh =
+                Arc::clone(self.monster_mesh.as_ref().expect("mesh set up in init"));
             let entity = self.world.spawn((
-                // Scale is the world size: the cube primitive spans -0.5..0.5,
-                // so Vec3::ONE would render a 2x2x2 block — bigger than the
-                // player and, next to the camera, a grey slab across the view.
+                // Scale is the world size: the meshes span -0.5..0.5, so
+                // Vec3::ONE would render a monster twice life-size — bigger
+                // than the player and, next to the camera, a slab across the
+                // view.
                 Transform {
                     position: pos,
                     rotation: glam::Quat::IDENTITY,
                     scale: Vec3::splat(MONSTER_SIZE),
                 },
                 MeshRenderer {
-                    mesh: Arc::clone(&cube),
+                    mesh: monster_mesh,
                     texture: Some(Arc::clone(&white)),
                 },
             ));
@@ -879,6 +939,7 @@ impl DungeonGame {
         let pos = self.player_position;
         let cube = Arc::clone(self.cube.as_ref().expect("mesh set up in init"));
         let white = Arc::clone(self.white.as_ref().expect("texture set up in init"));
+        let gem = Arc::clone(self.gem_mesh.as_ref().expect("mesh set up in init"));
         let entity = self.world.spawn((
             Transform {
                 position: pos,
@@ -886,7 +947,7 @@ impl DungeonGame {
                 scale: Vec3::splat(LOOT_SIZE),
             },
             MeshRenderer {
-                mesh: cube,
+                mesh: gem,
                 texture: Some(white),
             },
         ));
@@ -952,66 +1013,47 @@ impl DungeonGame {
     /// HUD: health/armor bars, depth, gold, monster count, toasts, and an
     /// end-of-run panel. Runs AFTER `present`, because egui paints to the
     /// default framebuffer.
+    /// The HUD, drawn with egui primitives rather than the engine's default
+    /// bars. The stock widget look (a grey panel with "Health" / "Armor"
+    /// labels) read like a debug overlay, not a dungeon crawl — so this paints
+    /// its own: a bottom-left health orb, a slim armor bar under it, a top
+    /// status line, and transient toasts that fade.
     fn draw_hud(&mut self, ctx: &mut Context) {
         let drawable_size = ctx.drawable_size();
-        let Some(ui) = self.ui.as_mut() else { return };
-        let Some(hud) = self.hud.as_mut() else { return };
+        if self.ui.is_none() || self.hud.is_none() {
+            return;
+        }
 
+        // Compute everything that needs `&mut self` BEFORE borrowing `ui` —
+        // `ask` crosses into the oxidized brain and takes &mut, so asking for
+        // it inside the ui borrow would overlap.
         let alive = self.monsters.iter().filter(|m| m.health > 0.0).count();
-        hud.set_bar("Health", self.player_health / 100.0);
-        hud.set_bar("Armor", self.player_armor);
-        hud.title = Some(format!(
-            "Depth {}  |  {} gold  |  {} monsters left",
-            self.depth, self.gold, alive
-        ));
+        let danger = self.ask(|_| ox_modules::dungeon::danger_level() as i32);
 
-        // Snapshot what the closure needs so it never borrows `self`.
-        let dead = self.dead;
-        let won = self.won;
-        let depth = self.depth;
-        let gold = self.gold;
-        let run_time = self.run_time;
-        let banner = self.banner.clone();
-        let low = self.player_health < 35.0 && !dead;
+        // Snapshot everything the closure needs — it must never borrow self.
+        let view = HudView {
+            health: self.player_health / 100.0,
+            armor: self.player_armor,
+            depth: self.depth,
+            gold: self.gold,
+            monsters_left: alive,
+            toasts: self
+                .hud
+                .as_ref()
+                .expect("checked above")
+                .toasts()
+                .iter()
+                .map(|(s, r)| (s.clone(), *r))
+                .collect(),
+            banner: self.banner.clone(),
+            dead: self.dead,
+            won: self.won,
+            run_time: self.run_time,
+            danger,
+        };
 
-        let style = self.params.hud;
-        let output = ui.run(drawable_size, |c| {
-            draw_hud(c, hud, &style);
-
-            if let Some((text, _)) = &banner {
-                center_window(c, "banner", text);
-            }
-            if low {
-                // A red edge vignette when hurt, drawn as four border
-                // bands rather than a rounded shape.
-                let rect = c.screen_rect();
-                // Alpha premultiplied in GAMMA space: egui's
-                // from_rgba_unmultiplied converts in linear space, which
-                // turns a subtle 28% wash into a near-opaque red slab.
-                let band = egui::Rect::from_min_size(
-                    rect.min,
-                    egui::vec2(rect.width(), 70.0),
-                );
-                c.layer_painter(egui::LayerId::background()).rect_filled(
-                    band,
-                    0.0,
-                    egui::Color32::from_rgba_premultiplied(48, 6, 6, 40),
-                );
-            }
-            if dead {
-                center_window(
-                    c,
-                    "over",
-                    &format!("You died on depth {depth}\n\n{gold} gold  |  {run_time:.0}s"),
-                );
-            } else if won {
-                center_window(
-                    c,
-                    "over",
-                    &format!("You escaped\n\n{gold} gold  |  {run_time:.0}s"),
-                );
-            }
-        });
+        let ui = self.ui.as_mut().expect("checked above");
+        let output = ui.run(drawable_size, |c| paint(c, &view));
         ui.paint(drawable_size, output);
     }
 }
@@ -1136,6 +1178,20 @@ impl Game for DungeonGame {
             .unwrap_or_else(|_| FALLBACK_FRAG.to_string());
         self.shader_cache = Some(ShaderVariantCache::new(vert, frag));
 
+        // Custom meshes. The cube primitive was doing double duty for walls,
+        // monsters, loot and pillars, which made every object in the dungeon
+        // the same box.
+        let wall = GpuMesh::upload(&gl, &mesh::box_mesh())?;
+        let floor = GpuMesh::upload(&gl, &mesh::box_mesh())?;
+        let pillar = GpuMesh::upload(&gl, &mesh::pillar_mesh(1.0))?;
+        let monster = GpuMesh::upload(&gl, &mesh::monster_mesh())?;
+        let gem = GpuMesh::upload(&gl, &mesh::gem_mesh())?;
+        self.wall_mesh = Some(Arc::new(wall));
+        self.floor_mesh = Some(Arc::new(floor));
+        self.pillar_mesh = Some(Arc::new(pillar));
+        self.monster_mesh = Some(Arc::new(monster));
+        self.gem_mesh = Some(Arc::new(gem));
+
         // A seamless stone texture for the walls. Bilinear, not Nearest: a
         // 64px pattern nearest-filtered shimmers into static at range.
         let stone = GpuTexture::from_rgba8(
@@ -1146,6 +1202,16 @@ impl Game for DungeonGame {
             TextureFilter::Bilinear,
         )?;
         self.stone = Some(Arc::new(stone));
+
+        // Flagstone for the floor, so it reads as a different material.
+        let flag = GpuTexture::from_rgba8(
+            &gl,
+            &floor_texture(64, 64),
+            64,
+            64,
+            TextureFilter::Bilinear,
+        )?;
+        self.flagstone = Some(Arc::new(flag));
 
         // Audio is optional: a machine with no output device must still play.
         self.audio = match AudioContext::new() {
