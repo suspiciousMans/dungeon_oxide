@@ -50,7 +50,7 @@ use engine::ui::{egui, EguiState};
 
 use hud::{paint, HudView};
 use natives::Bridge;
-use texture::{floor_texture, stone_texture};
+use texture::{creature_texture, floor_texture, gem_texture, stone_texture};
 
 /// Eye offset above the player's feet.
 const EYE_HEIGHT: f32 = 1.5;
@@ -183,6 +183,8 @@ struct DungeonGame {
     audio: Option<AudioContext>,
     stone: Option<Arc<GpuTexture>>,
     flagstone: Option<Arc<GpuTexture>>,
+    creature: Option<Arc<GpuTexture>>,
+    gem_tex: Option<Arc<GpuTexture>>,
 }
 
 impl DungeonGame {
@@ -239,6 +241,8 @@ impl DungeonGame {
             audio: None,
             stone: None,
             flagstone: None,
+            creature: None,
+            gem_tex: None,
         }
     }
 
@@ -393,7 +397,9 @@ impl DungeonGame {
                 },
                 MeshRenderer {
                     mesh: monster_mesh,
-                    texture: Some(Arc::clone(&white)),
+                    texture: Some(Arc::clone(
+                        self.creature.as_ref().expect("texture set up in init"),
+                    )),
                 },
             ));
             self.monsters.push(Monster {
@@ -937,8 +943,6 @@ impl DungeonGame {
         // loot the player never walks over, which made armor effectively
         // unreachable (1 pickup per run in testing).
         let pos = self.player_position;
-        let cube = Arc::clone(self.cube.as_ref().expect("mesh set up in init"));
-        let white = Arc::clone(self.white.as_ref().expect("texture set up in init"));
         let gem = Arc::clone(self.gem_mesh.as_ref().expect("mesh set up in init"));
         let entity = self.world.spawn((
             Transform {
@@ -948,7 +952,9 @@ impl DungeonGame {
             },
             MeshRenderer {
                 mesh: gem,
-                texture: Some(white),
+                texture: Some(Arc::clone(
+                    self.gem_tex.as_ref().expect("texture set up in init"),
+                )),
             },
         ));
         self.loot.push(Loot {
@@ -1212,6 +1218,26 @@ impl Game for DungeonGame {
             TextureFilter::Bilinear,
         )?;
         self.flagstone = Some(Arc::new(flag));
+
+        // Monsters and loot get their own materials. Sharing the 1x1 white
+        // fallback made a monster at point-blank render as a featureless
+        // white slab — the single worst-looking thing in the game.
+        let creature = GpuTexture::from_rgba8(
+            &gl,
+            &creature_texture(64, 64),
+            64,
+            64,
+            TextureFilter::Bilinear,
+        )?;
+        self.creature = Some(Arc::new(creature));
+        let gem = GpuTexture::from_rgba8(
+            &gl,
+            &gem_texture(64, 64),
+            64,
+            64,
+            TextureFilter::Bilinear,
+        )?;
+        self.gem_tex = Some(Arc::new(gem));
 
         // Audio is optional: a machine with no output device must still play.
         self.audio = match AudioContext::new() {
