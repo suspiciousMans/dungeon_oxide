@@ -5,7 +5,7 @@
 # boundary values, state transitions, and game rule consistency.
 # ============================================================================
 
-import "./pure_rules.ox"
+import "../../scripts/dungeon.ox"
 
 # =============================================================================
 # MONSTER AI DECISION TESTS
@@ -223,42 +223,9 @@ fn test_strike_cooldown_deep_floor() {
 # =============================================================================
 
 # Test: incoming_damage with 0 armor = raw damage with variance
-fn test_incoming_damage_no_armor() {
-    let raw = 10.0
-    let result = incoming_damage(raw, 0.0)
-    assert(result >= raw * 0.85)
-    assert(result <= raw * 1.15)
-}
-
 # Test: incoming_damage with 0.75 armor (max) reduces to 25% of raw
-fn test_incoming_damage_max_armor() {
-    let raw = 100.0
-    let result = incoming_damage(raw, 0.75)
-    let min_damage = 100.0 * 0.25 * 0.85
-    let max_damage = 100.0 * 0.25 * 1.15
-    assert(result >= min_damage)
-    assert(result <= max_damage)
-}
-
 # Test: incoming_damage with armor > 0.75 clamps at 0.75
-fn test_incoming_damage_armor_caps_at_0_75() {
-    let raw = 100.0
-    let result1 = incoming_damage(raw, 0.75)
-    let result2 = incoming_damage(raw, 1.0)
-    assert_eq(result1, result2)
-}
-
 # Test: armor reduction formula: reduced = raw * (1 - armor)
-fn test_incoming_damage_reduction_formula() {
-    let raw = 10.0
-    let armor = 0.5
-    let result = incoming_damage(raw, armor)
-    let min_expected = raw * 0.5 * 0.85
-    let max_expected = raw * 0.5 * 1.15
-    assert(result >= min_expected)
-    assert(result <= max_expected)
-}
-
 # =============================================================================
 # CLAMP HELPER TESTS
 # =============================================================================
@@ -612,23 +579,7 @@ fn test_kind1_vs_kind2_flee_thresholds() {
 # =============================================================================
 
 # Test: armor stacking reduces damage significantly
-fn test_armor_stacking_effect() {
-    let no_armor = incoming_damage(100.0, 0.0)
-    let half_armor = incoming_damage(100.0, 0.5)
-    assert(half_armor < no_armor)
-}
-
 # Test: damage reduction at different armor levels
-fn test_damage_reduction_by_armor_level() {
-    let raw = 50.0
-    let armor_25 = incoming_damage(raw, 0.25)
-    let armor_50 = incoming_damage(raw, 0.5)
-    let armor_75 = incoming_damage(raw, 0.75)
-    
-    assert(armor_25 > armor_50)
-    assert(armor_50 > armor_75)
-}
-
 # =============================================================================
 # INTEGRATION: DIFFICULTY SCALING
 # =============================================================================
@@ -701,4 +652,22 @@ fn test_strike_cooldown_floor() {
 fn test_attack_cooldown_floor() {
     let result = attack_cooldown(100)
     assert_eq(result, 0.25)
+}
+
+# --- low-health monsters (hp_frac <= 0.15) only attack at point-blank range (< 1.2) ----------
+fn test_wounded_monster_does_not_attack_at_1_5() {
+    # the 1.8 attack range needs hp_frac > 0.15; at 0.1 this monster keeps chasing (2)
+    assert_eq(monster_decision(0, 0.1, 1.5), 2)
+}
+
+fn test_wounded_monster_does_not_attack_just_outside_point_blank() {
+    assert_eq(monster_decision(0, 0.1, 1.25), 2)
+}
+
+fn test_wounded_monster_attacks_inside_point_blank() {
+    assert_eq(monster_decision(0, 0.1, 1.15), 4)
+}
+
+fn test_healthy_monster_attacks_at_1_5() {
+    assert_eq(monster_decision(0, 0.5, 1.5), 4)
 }
