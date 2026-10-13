@@ -11,7 +11,7 @@ oxidized test tests/rules/
 
 Needs an `oxidized` build that has `oxidized test` **and** stand-ins for `fn native`
 host functions. Without the stand-ins the rules file cannot be compiled outside the
-engine (`unresolved import crate::__oxidized_natives`). Currently: 84 tests, all passing.
+engine (`unresolved import crate::__oxidized_natives`). Currently: 105 tests, all passing.
 
 ## What is covered
 
@@ -20,18 +20,24 @@ Every pure function in `dungeon.ox`: `monster_decision` (every branch and bounda
 `monster_count_for_depth`, `kind_pool_for_depth`, `health_on_descend`, `pickup_line`,
 `floor_epigraph`, `player_attack_damage`, `attack_cooldown`, `attack_range`, `kill_reward`.
 
-## What is NOT covered (needs native mocking)
+## Host-dependent rules (native mocks)
 
-Functions that call the host engine cannot run under `oxidized test`: each `fn native`
-gets a stand-in that panics with
-`native function ... is implemented by the host engine and is not available under oxidized test`.
+`test_dungeon_host_rules.ox` covers the functions that call the engine: `roll_loot`,
+`incoming_damage`, `danger_level`. It uses `mock fn` (an `oxidized` feature: a test-only body
+for a `fn native`) and drives the mocks through `shared_get` / `shared_set` cells, because a
+`mock fn` has one body per file. Boundary cases build `r` from the same float expression as the
+rule, so `<` vs `<=` is decided exactly.
 
-- `incoming_damage` (uses `host_rng()`)
-- `roll_loot` (uses `host_rng()`)
-- `danger_level` (reads host state)
+## Mutation check
 
-Their tests were removed rather than run against a made-up copy. They become testable
-once natives can be mocked.
+Single-operator and single-constant mutants of those three functions (48 total), each run
+against both test files. Result: **47 killed, 1 survived**. The survivor
+(`health_chance > 0.0` -> `>= 0.0`) is equivalent: the guard is redundant because `r >= 0`
+can never be below a non-positive chance, and `health_chance` is never exactly `0.0` for an
+integer depth. The first version of the mock tests (8 tests, one RNG value) killed only
+16 of 48, which is why this suite exists.
+
+Current totals: 105 tests (84 pure + 21 host), all passing.
 
 ## Mutation check
 
